@@ -12,14 +12,13 @@ with app.app_context():
     from .Auth import auth
     from .CourseData import AboutCourse
     from .ModuleQuiz import ModuleQuiz
+    from .Performance import Performance 
 
 # Register the Blueprint for the artifact routes   
 app.register_blueprint(auth)
 app.register_blueprint(AboutCourse)
 app.register_blueprint(ModuleQuiz)
-
-# Route to proxy login requests to the microservice
-
+app.register_blueprint(Performance)
 
 @app.route("/")
 def hello_world():

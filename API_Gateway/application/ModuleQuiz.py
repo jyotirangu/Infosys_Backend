@@ -15,7 +15,7 @@ def get_modules():
             return jsonify({"error": "User ID and Course ID are required"}), 400
 
         # Define the URL of the module microservice
-        module_service_url = "http://127.0.0.1:5003/api/modules"
+        module_service_url = "http://127.0.0.1:5002/api/modules"
         
         # Forward the incoming request data to the module microservice
         response = requests.get(module_service_url, params={'user_id': user_id, 'course_id': course_id})
@@ -35,7 +35,7 @@ def update_progress(module_id):
             return jsonify({"error": "Invalid progress value"}), 400
 
         # Define the URL of the progress microservice
-        progress_service_url = f"http://127.0.0.1:5003/api/modules/{module_id}/progress"
+        progress_service_url = f"http://127.0.0.1:5002/api/modules/{module_id}/progress"
         
         # Forward the incoming request data to the progress microservice
         response = requests.put(progress_service_url, json={'progress': new_progress})
@@ -49,7 +49,7 @@ def update_progress(module_id):
 def get_module_details(module_id):
     try:
         # Define the URL of the module details microservice
-        module_details_service_url = f"http://127.0.0.1:5003/module/{module_id}/details"
+        module_details_service_url = f"http://127.0.0.1:5002/module/{module_id}/details"
         
         # Forward the incoming request to the module details microservice
         response = requests.get(module_details_service_url)
@@ -63,7 +63,7 @@ def get_module_details(module_id):
 def submit_quiz(module_id):
     try:
         # Define the URL of the quiz submission microservice
-        quiz_submission_service_url = f"http://127.0.0.1:5003/module/{module_id}/submit-quiz"
+        quiz_submission_service_url = f"http://127.0.0.1:5002/module/{module_id}/submit-quiz"
         
         # Forward the incoming request data to the quiz submission microservice
         response = requests.post(quiz_submission_service_url, json=request.get_json())
@@ -77,7 +77,7 @@ def submit_quiz(module_id):
 def get_employee_progress_detail(user_id, courseid):
     try:
         # Define the URL of the employee progress microservice
-        employee_progress_service_url = f"http://127.0.0.1:5003/api/employee-progress-detail/{user_id}/{courseid}"
+        employee_progress_service_url = f"http://127.0.0.1:5002/api/employee-progress-detail/{user_id}/{courseid}"
         
         # Forward the incoming request to the employee progress microservice
         response = requests.get(employee_progress_service_url)
@@ -97,7 +97,7 @@ def get_course_progress():
             return jsonify({"message": "Missing parameters (user_id or course_id)"}), 400
 
         # Define the URL of the course progress microservice
-        course_progress_service_url = f"http://127.0.0.1:5003/api/course-progress"
+        course_progress_service_url = f"http://127.0.0.1:5002/api/course-progress"
         
         # Forward the incoming request data to the course progress microservice
         response = requests.get(course_progress_service_url, params={'user_id': user_id, 'course_id': course_id})

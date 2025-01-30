@@ -16,7 +16,7 @@ def get_courses(user_id):
 def add_course():
     try:
         data = request.get_json()
-
+        print(data)
         # Forward the request to the microservice
         response = requests.post("http://127.0.0.1:5002/addCourse", json=data)
         return jsonify(response.json()), response.status_code
@@ -170,3 +170,34 @@ def disapprove_user(user_id):
         return jsonify(response.json()), response.status_code
     except requests.exceptions.RequestException as e:
         return jsonify({"error": "Failed to connect to the disapprove user service", "details": str(e)}), 500
+
+    
+@AboutCourse.route('/course/<int:course_id>/enrollments', methods=['GET'])
+def get_enrollment_status(course_id):
+    enrollment_service_url = f"http://127.0.0.1:5002/course/{course_id}/enrollments"
+
+    try:
+        # Forward the request to the enrollment service
+        response = requests.get(enrollment_service_url)
+
+        # Return the response from the microservice to the client
+        return jsonify(response.json()), response.status_code
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": "Failed to connect to the enrollment service", "details": str(e)}), 500
+
+@AboutCourse.route('/employee-course-progress/<int:user_id>/<int:course_id>', methods=['GET'])
+def get_employee_enrollment_status(user_id, course_id):
+    print(user_id)
+    print(course_id)
+    employee_service_url = f"http://127.0.0.1:5002/employee-course-progress/{user_id}/{course_id}"
+
+    try:
+        # Forward the request to the first microservice
+        response = requests.get(employee_service_url)
+        print(response)
+
+        # Return the response from the microservice to the client
+        return jsonify(response.json()), response.status_code
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": "Failed to connect to the employee service", "details": str(e)}), 500
+

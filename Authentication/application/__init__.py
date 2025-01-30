@@ -4,6 +4,7 @@ from flask_migrate import Migrate
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash
 from werkzeug.security import check_password_hash
+import requests
 from flask_jwt_extended import (
     JWTManager,
     create_access_token,
@@ -13,8 +14,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-
-
 
 @app.route("/")
 def hello_world():
@@ -26,24 +25,6 @@ from datetime import datetime
 from sqlalchemy import func
 
 db = SQLAlchemy()
-
-jwt = JWTManager(app)
-CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
-
-app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://postgres:1234@localhost:5432/Infosys"
-# It’s not specifically related to JWTs but is essential for overall app security. Server side secret key
-app.config['SECRET_KEY'] = 'your_secret_key'
-# The JWT_SECRET_KEY is used to generate a secure signature for JWTs, allowing the server to verify the authenticity of tokens. It is making token
-app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key'
-
-# db = SQLAlchemy(app)
-db.init_app(app)
-migrate = Migrate(app, db)
-
-# Create the database tables if they don't exist
-with app.app_context():
-    db.create_all()
-
 
 class User(db.Model):
     # __tablename__ = 'Infosys_user'  # Table name
@@ -57,7 +38,28 @@ class User(db.Model):
     answer = db.Column(db.String(50), nullable=False)
 
 
-# artifact_1BP = Blueprint('artifact_1', __name__)
+
+jwt = JWTManager(app)
+CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
+
+
+# app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://postgres:1234@localhost:5432/Infosys"
+app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://postgres:1234@localhost:5432/InfosysAuth"
+
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# It’s not specifically related to JWTs but is essential for overall app security. Server side secret key
+app.config['SECRET_KEY'] = 'your_secret_key'
+# The JWT_SECRET_KEY is used to generate a secure signature for JWTs, allowing the server to verify the authenticity of tokens. It is making token
+app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key'
+
+# db = SQLAlchemy(app)
+db.init_app(app)
+migrate = Migrate(app, db)
+
+# Create the database tables if they don't exist
+with app.app_context():
+    db.create_all()
 
 # Route to sign up
 @app.route("/register", methods=["POST"])
@@ -93,8 +95,7 @@ def signup():
     except Exception as e:
         return jsonify({"error":str(e)}),500
 
-
-   
+  
 # Route to Login
 
 @app.route("/login", methods=["POST"])
@@ -177,6 +178,162 @@ def forgetpassword():
     
     return jsonify({"message": "Password updated successfully!"}), 200
 
+
+# Route to fetch all users
+@app.route('/users', methods=['GET'])
+def get_all_users():
+    """
+    Fetch all users from the database.
+    """
+    users = User.query.all()
+    user_list = [
+        {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role,
+            "isVerified": user.isVerified,
+            "answer": user.answer
+        }
+        for user in users
+    ]
+    return jsonify(user_list), 200
+
+# Route to fetch a user by ID
+@app.route('/users/<int:user_id>', methods=['GET'])
+def get_user_by_id(user_id):
+    """
+    Fetch a specific user by ID.
+    """
+    user = User.query.filter_by(id=user_id).first()
+    if user:
+        user_data = {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role,
+            "isVerified": user.isVerified,
+            "answer": user.answer
+        }
+        print(user_data)
+        return jsonify(user_data), 200
+        
+    else:
+        return jsonify({"error": f"User with ID {user_id} not found!"}), 404
+    
+
+@app.route('/users/role/Employee', methods=['GET'])
+def get_employees():
+    try:
+        # Fetch all users with the 'Employee' role
+        employees = User.query.filter_by(role='Employee').all()
+
+        if not employees:
+            return jsonify({"message": "No employees found"}), 404
+
+        # Convert employee objects to a list of dictionaries
+        employee_list = [
+            {"id": employee.id, "name": employee.name, "email": employee.email, "role": employee.role}
+            for employee in employees
+        ]
+        
+        return jsonify(employee_list), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# Route to fetch all unverified users
+@app.route('/users/unverified', methods=['GET'])
+def get_unverified_users():
+    try:
+        # Fetch all users with 'isVerified' as 'False'
+        unverified_users = User.query.filter_by(isVerified="False").all()
+
+        if not unverified_users:
+            return jsonify({"message": "No unverified users found"}), 404
+
+        # Convert user objects to a list of dictionaries
+        unverified_user_list = [
+            {"id": user.id, "name": user.name, "email": user.email, "role": user.role}
+            for user in unverified_users
+        ]
+        
+        return jsonify(unverified_user_list), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Route to approve a user
+@app.route('/users/approve/<int:user_id>', methods=['PATCH'])
+def approve_user(user_id):
+    try:
+        # Fetch the user by ID
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        # Update the 'isVerified' status to 'True'
+        user.isVerified = "True"
+        db.session.commit()
+        return jsonify({"message": "User approved successfully!"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Route to disapprove or reset a user
+@app.route('/users/disapprove/<int:user_id>', methods=['PATCH'])
+def disapprove_user(user_id):
+    try:
+        # Fetch the user by ID
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        # Update the 'isVerified' status to 'False'
+        user.isVerified = "False"
+        db.session.commit()
+        return jsonify({"message": "User disapproved successfully!"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+    
+# Base URL of Courses Microservice
+COURSES_MICROSERVICE_URL = "http://localhost:5002"
+
+# Profile route
+@app.route('/profile/<int:user_id>', methods=['GET'])
+def get_user_profile(user_id):
+    try:
+        # Fetch user details from Authentication Microservice
+        user = User.query.get(user_id)
+        print(user)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        # Prepare user profile data
+        user_details = {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role,
+            "isVerified": user.isVerified
+        }
+
+        # Fetch user's course performance from Courses Microservice
+        response = requests.get(f"{COURSES_MICROSERVICE_URL}/userCourses/{user_id}")
+        if response.status_code != 200:
+            return jsonify({"error": "Failed to fetch data from Courses Microservice"}), response.status_code
+
+        course_performance = response.json()
+
+        # Combine profile and course data
+        profile_data = {
+            "user_details": user_details,
+            "course_performance": course_performance
+        }
+
+        return jsonify(profile_data), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(debug=True,port=5001)

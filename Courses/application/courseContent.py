@@ -1,22 +1,19 @@
 from flask import Blueprint, jsonify, request
 from sqlalchemy.exc import SQLAlchemyError
 from .model import db
-from .model import User, Course, Enrollment, AuditTrail, Module, Quiz
+from .model import Course, Enrollment, AuditTrail, Module, Quiz, CourseProgress
 from .email import send_email
 from datetime import datetime
-
+import requests
 
 # Create a Blueprint for course-related routes
 AboutCourse = Blueprint('AboutCourse', __name__)
-
+# Base URL for the Authentication microservice
+AUTH_SERVICE_URL = "http://localhost:5001"  
 
 # Correct the log_audit_trail definition to accept data as an argument
 def log_audit_trail(course, user, action):
     try:
-        # course_id = data.get('course_id')
-        # user_id = data.get('user_id')
-        # action = data.get('action')
-
         # Create a new audit log
         new_audit = AuditTrail(
             course_id=course,
@@ -28,24 +25,39 @@ def log_audit_trail(course, user, action):
     except Exception as e:
         db.session.rollback()  # Rollback transaction in case of error
         print(f"Error logging audit trail: {str(e)}")
-        
-        
+
+
+def fetch_user_details(user_id):
+    try:
+        response = requests.get(f"{AUTH_SERVICE_URL}/users/{user_id}")
+        if response.status_code == 200:
+            return response.json()  # Assuming the response is JSON formatted
+        else:
+            return None
+    except requests.RequestException as e:
+        print(f"Error fetching user details: {str(e)}")
+        return None
+
 @AboutCourse.route('/courses/<int:user_id>', methods=['GET'])
 def get_courses(user_id):
     try:
-        user = User.query.filter_by(id=user_id).first()
+        # Fetch user details from the authentication microservice
+        user = fetch_user_details(user_id)
+        print(user)
         if not user:
-            return jsonify({"error": "User not found!"}), 404
+            return jsonify({"error": "User not found in the authentication service!"}), 404
 
-        user_role = user.role
+        user_role = user.get("role")
         # Fetch all courses ordered by the creation date
         courses = Course.query.order_by(Course.created_at.desc()).all()
+        
 
         course_list = []
         for course in courses:
             # Check if the user is enrolled in the course
             enrollment = Enrollment.query.filter_by(user_id=user_id, course_id=course.id).first()
-
+            courseprogress= CourseProgress.query.filter_by(user_id=user_id, course_id=course.id).first()
+            # print(courseprogress.status)
             # Prepare the course data
             course_data = {
                 "id": course.id,
@@ -56,13 +68,11 @@ def get_courses(user_id):
                 "start_date": course.start_date,
                 "end_date": course.end_date,
                 "duration": course.duration,
+                "status":courseprogress.status if courseprogress else None,
+                 "enrollment_status": enrollment.status if enrollment else None,
                 "detailed_description": course.detailed_description,
-                "created_at": course.created_at.strftime('%d-%m-%Y') if course.created_at else None,
-                "created_by": {
-                    "id": course.created_by,
-                    "name": User.query.get(course.created_by).name,
-                    "email": User.query.get(course.created_by).email
-                },
+                "created_at": course.created_at,
+                "created_by": course.created_by,  # Keep it as ID, since user data is fetched from another service
                 "modules": [],
                 "is_enrolled": False,
                 "enrollment_status": None
@@ -90,6 +100,7 @@ def get_courses(user_id):
                 }
                 course_data["modules"].append(module_data)
 
+            # print(enrollment)
             # Check if the user is enrolled and set the enrollment status
             if enrollment:
                 course_data["is_enrolled"] = True
@@ -111,7 +122,7 @@ def get_courses(user_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
+ 
 @AboutCourse.route('/addCourse', methods=['POST'])
 def add_course():
     try:
@@ -131,11 +142,14 @@ def add_course():
 
         if not all([course_id, title, description, instructor, start_date, end_date, duration, created_by]):
             return jsonify({"error": "All fields are required!"}), 400
+        
 
-        # Validate user existence
-        user = User.query.get(created_by)
-        if not user:
-            return jsonify({"error": f"User with ID {created_by} not found!"}), 404
+        # Fetch creator details from the authentication microservice
+        creator = fetch_user_details(created_by)
+        if not creator:
+            return jsonify({"error": f"Creator with ID {created_by} not found in the authentication service!"}), 404
+        
+        created_at = datetime.now()
 
         # Create a new course
         new_course = Course(
@@ -147,7 +161,8 @@ def add_course():
             end_date=end_date,
             duration=duration,
             detailed_description=detailed_description,
-            created_by=created_by
+            created_by=created_by,
+            created_at = datetime.now()
         )
         db.session.add(new_course)
         db.session.flush()  # Get the ID for related records
@@ -167,188 +182,156 @@ def add_course():
 
             quizzes = module_data.get('quizzes', [])
             for quiz_data in quizzes:
-                print("Quiz Data:", quiz_data)
                 new_quiz = Quiz(
                     question=quiz_data.get('question'),
                     correct_answer=quiz_data.get('correctAnswer'),
                     marks=quiz_data.get('marks'),
-                    options=quiz_data.get('options'),  # Add options field here
+                    options=quiz_data.get('options'),
                     module_id=new_module.id
                 )
-                print(f"Adding Quiz: {new_quiz.question}, Module ID: {new_quiz.module_id}")
                 db.session.add(new_quiz)
-                
-            # print(new_quiz)
-            # db.session.add(new_quiz)
 
         # Commit the transaction
         db.session.commit()
 
         # Fetch all user emails for notifications
-        users = User.query.all()
-        recipient_emails = [user.email for user in users if user.email != "jyotirangu657@gmail.com"]
+        users = requests.get(f"{AUTH_SERVICE_URL}/users").json()  # Assuming it returns all users
+        recipient_emails = [user['email'] for user in users if user['email'] != "jyotirangu657@gmail.com"]
 
         # Send notifications
         for email in recipient_emails:
             send_email(
                 sender_email="jyotirangu657@gmail.com",
-                sender_password="avwt sldu agas ndpf",
+                sender_password="avwt sldu agas ndpf",  
                 recipient_email=email,
                 subject="New Course Added",
                 body=f"A new course titled '{title}' has been added.\nStart Date: {start_date}\nDuration: {duration}",
                 attachment_path=None
             )
+            
+        action = f"'{title}' is Added."
 
-        return jsonify({"message": "Course added successfully! Emails sent to users.", "course": {
-            "id": new_course.id,
-            "course_id": new_course.course_id,
-            "title": new_course.title,
-            "description": new_course.description,
-            "instructor": new_course.instructor,
-            "start_date": new_course.start_date,
-            "end_date": new_course.end_date,
-            "duration": new_course.duration,
-            "created_at": new_course.created_at,
-            "modules": [
-                {
-                    "id": module.id,
-                    "title": module.title,
-                    "description": module.description,
-                    "objectives": module.objectives,
-                    "learning_points": module.learning_points,
-                    "quizzes": [
-                        {
-                            "id": quiz.id,
-                            "question": quiz.question,
-                            "correct_answer": quiz.correct_answer,
-                            "marks": quiz.marks
-                        }
-                        for quiz in module.quizzes
-                    ]
-                }
-                for module in new_course.modules
-            ],
-            "created_by": {
-                "id": user.id,
-                "name": user.name,
-                "email": user.email
-            }
-        }}), 201
+        new_audit = AuditTrail(
+            course_id=course_id,
+            user_id=users.user_id,
+            action=action
+        )
+        db.session.add(new_audit)
+        db.session.commit()
+
+        return jsonify({"message": "Course added successfully! Emails sent to users."}), 201
+    
+    
 
     except Exception as e:
         db.session.rollback()  # Rollback in case of an error
         return jsonify({"error": str(e)}), 500
 
 
-
-
 @AboutCourse.route('/instructor', methods=['GET'])
 def get_instructors():
     try:
-        # Query all users with the role of "instructor"
-        instructors = User.query.filter_by(role='Instructor').all()
-
-        # Format the data as JSON
-        instructor_list = [
-            {
-                'id': instructor.id,
-                'name': instructor.name,
-                'email': instructor.email,
-                'role': instructor.role,
-                'isVerified': instructor.isVerified
-            } for instructor in instructors
+        # Make an API call to the Authentication microservice to get users with the role 'Instructor'
+        response = requests.get(f'{AUTH_SERVICE_URL}/users')
+        
+        if response.status_code != 200:
+            return jsonify({'status': 'error', 'message': 'Failed to fetch instructors!'}), response.status_code
+        
+        users = response.json()
+        # Filter instructors from the API response
+        instructors = [
+            user for user in users if user['role'].lower() == 'instructor'
         ]
 
         return jsonify({
             'status': 'success',
-            'instructors': instructor_list
+            'instructors': instructors
         }), 200
+
     except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
-        
- 
- 
-# Create a new route in your backend for handling PUT requests to update a course.       
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @AboutCourse.route("/editCourse/<int:course_id>", methods=["POST", "PUT"])
 def edit_course(course_id):
     try:
         data = request.get_json()
-        print(data)
-        course = Course.query.get(course_id)
+        Dcourse = data.get("courseData")
         user_id = data.get("userId")
-        Dcourse= data.get("courseData")
 
-        print("testing")
-        print(Dcourse)
-        print(user_id)
+        if not user_id:
+            return jsonify({"error": "User ID is required!"}), 400
 
+        # Fetch user details from Authentication microservice
+        auth_service_url = f'http://localhost:5001/users/{user_id}'  # Replace with actual URL
+        response = requests.get(auth_service_url)
+        if response.status_code != 200:
+            return jsonify({"error": "Failed to fetch user details!"}), response.status_code
+        
+        user_details = response.json()
+
+        # Fetch the course from the database
+        course = Course.query.get(course_id)
         if not course:
             return jsonify({"error": "Course not found!"}), 404
 
-        course.title=Dcourse['title'] 
+        # Update course details
+        course.title = Dcourse['title']
         course.description = Dcourse['description']
         course.start_date = Dcourse['start_date']
         course.end_date = Dcourse['end_date']
         course.duration = Dcourse['duration']
-        # course.detailed_description = Dcourse['detailed_description']
+        course.detailed_description = Dcourse.get('detailed_description', course.detailed_description)
+        course.created_by = user_id  # Assuming the user who edits is the creator
 
         db.session.commit()
-        
-        # Log the action in the audit trail
-        action = f"'{course.title}' is Edited."
 
-        new_audit = AuditTrail(
-            course_id=course_id,
-            user_id=user_id,
-            action=action
-        )
+        # Log the action in the audit trail
+        action = f"'{course.title}' is Edited by {user_details['name']} ({user_details['email']})."
+        new_audit = AuditTrail(course_id=course_id, user_id=user_id, action=action)
         db.session.add(new_audit)
         db.session.commit()
-        
+
         return jsonify({"message": "Course updated successfully!"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-
-
 @AboutCourse.route('/course/enrolledcourses/<int:user_id>', methods=['GET'])
 def get_enrolled_courses(user_id):
     try:
-        # Get the user_id from query parameters or session
-        # user_id = request.args.get('user_id')  # Adjust to retrieve from session if needed
-        
-        if not user_id:
-            return jsonify({'error': 'User ID is required.'}), 400
-        print(user_id)
-        # Query for enrollments where the course is not yet completed
+        # Fetch user details from Authentication microservice
+        auth_service_url = f'http://localhost:5001/users/{user_id}'  # Replace with actual URL
+        user_response = requests.get(auth_service_url)
+        if user_response.status_code != 200:
+            return jsonify({'error': 'Failed to fetch user details!'}), user_response.status_code
+
+        user_details = user_response.json()
+
+        # Fetch enrollments for the user
         enrollments = Enrollment.query.filter_by(user_id=user_id).all()
-        print(enrollments)
-        
-        # If no enrollments found
         if not enrollments:
             return jsonify({'message': 'No enrolled courses found.'}), 404
 
         # Construct response data
         courses = []
         for enrollment in enrollments:
-            course_details = Course.query.filter_by(id=enrollment.course_id).first()  # Assuming you have a Course table
+            course_details = Course.query.filter_by(id=enrollment.course_id).first()
             course = {
                 'course_id': enrollment.course_id,
-                'course_name': course_details.title,  # Include course title if available
+                'course_name': course_details.title if course_details else None,
                 'status': enrollment.status,
-                'enrolled_date': enrollment.enrolled_date.strftime('%Y-%m-%d %H:%M:%S') if enrollment.enrolled_date else None
+                'enrolled_date': enrollment.enrolled_date.strftime('%Y-%m-%d %H:%M:%S') if enrollment.enrolled_date else None,
+                'course_description': course_details.description if course_details else None,
+                'detailed_description': course_details.detailed_description if course_details else None
             }
             courses.append(course)
+    
 
         return jsonify({'enrolled_courses': courses}), 200
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
 
 
 @AboutCourse.route('/enroll', methods=['POST'])
@@ -388,6 +371,7 @@ def enroll_in_course():
         return jsonify({'error': str(e)}), 500
 
 
+# Mark Course as Completed
 
 @AboutCourse.route('/course/completed', methods=['POST'])
 def complete_course():
@@ -411,55 +395,63 @@ def complete_course():
         enrollment.status = 'Completed'
         db.session.commit()
 
+        # Log audit trail
+        log_audit_trail_data = {
+            'course_id': course_id,
+            'user_id': user_id,
+            'action': 'Course Completed'
+        }
+        log_audit_trail(log_audit_trail_data)
+
         return jsonify({'message': 'Course marked as completed!'}), 200
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
-
-# Log an Action in the Audit Trail A route to log actions such as enrollment or course completion.
+# Log an Action in the Audit Trail
 
 @AboutCourse.route('/course/audittrail', methods=['POST'])
-def log_audit_trail():
-    data = request.get_json()
-    course_id = data.get('course_id')
-    user_id = data.get('user_id')
-    action = data.get('action')
-    
-    new_audit = AuditTrail(
-        course_id=course_id,
-        user_id=user_id,
-        action=action
-    )
-    db.session.add(new_audit)
-    db.session.commit()
-    
-    return jsonify({'message': 'Audit trail logged successfully!'}), 201
+def log_audit_trail(data):
+    try:
+        course_id = data.get('course_id')
+        user_id = data.get('user_id')
+        action = data.get('action')
 
-
-
-@AboutCourse.route('/course/audittrail', methods=['GET'])
-def get_course_audit_trail():
-    audit_trails = AuditTrail.query.all()
-    
-    actions = []
-    for idx, audit in enumerate(audit_trails, start=1):  # Start the counter from 1
-        user_name = User.query.filter_by(id=audit.user_id).first().name  # Fetch user name by user_id
+        new_audit = AuditTrail(
+            course_id=course_id,
+            user_id=user_id,
+            action=action
+        )
+        db.session.add(new_audit)
+        db.session.commit()
         
-        actions.append({
-            'user_id': idx,  # Incremented counter
-            'user_name': user_name,  # The user name fetched from the User model
-            'action': audit.action,
-            'timestamp': audit.timestamp
-        })
+        return jsonify({'message': 'Audit trail logged successfully!'}), 201
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
     
-    print(actions)
-    return jsonify({'audit_trail': actions}), 200
+    
+@AboutCourse.route('/course/audittrail', methods=['GET'])
+def get_audit_trail():
+    try:
+        audit_trails = AuditTrail.query.all()
+        result = [
+            {
+                'id': audit.id,
+                'course_id': audit.course_id,
+                'user_id': audit.user_id,
+                'action': audit.action,
+                'timestamp': audit.timestamp 
+            }
+            for audit in audit_trails
+        ]
+        return jsonify(result), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
-
-# This route will accept a course_id and fetch the details from the User table along with the enrollment status.
 @AboutCourse.route('/course/users/<int:course_id>', methods=['GET'])
 def get_users_for_course(course_id):
     try:
@@ -470,149 +462,245 @@ def get_users_for_course(course_id):
             return jsonify({"message": "No users found for this course."}), 404
 
         # Fetch user details along with their enrollment status
-        users_list = [
-            {
-                "user_id": enrollment.user_id,
-                "name": User.query.get(enrollment.user_id).name,
-                "email": User.query.get(enrollment.user_id).email,
-                "status": enrollment.status,  # Enrolled or Completed
-                "enrolled_date": enrollment.enrolled_date,
-                "is_completed": enrollment.is_completed
-            }
-            for enrollment in enrollments
-        ]
+        users_list = []
+        for enrollment in enrollments:
+            # API call to Authentication microservice to fetch user details
+            response = requests.get(f'http://localhost:5001/users/{enrollment.user_id}')
+            if response.status_code == 200:
+                user_data = response.json()
+                users_list.append({
+                    "user_id": enrollment.user_id,
+                    "name": user_data['name'],
+                    "email": user_data['email'],
+                    "status": enrollment.status,  # Enrolled or Completed
+                    "enrolled_date": enrollment.enrolled_date,
+                    "is_completed": enrollment.is_completed
+                })
+            else:
+                users_list.append({
+                    "user_id": enrollment.user_id,
+                    "name": 'Unknown',
+                    "email": 'Unknown',
+                    "status": enrollment.status,
+                    "enrolled_date": enrollment.enrolled_date,
+                    "is_completed": enrollment.is_completed
+                })
 
         return jsonify({"course_id": course_id, "users": users_list}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-
 @AboutCourse.route('/viewCourse/<int:user_id>/<int:course_id>', methods=['GET'])
 def view_course(user_id, course_id):
     try:
-        # Fetch the course details
         course = Course.query.get(course_id)
         if not course:
             return jsonify({"error": "Course not found!"}), 404
 
-        # Fetch user details
-        user = User.query.get(user_id)
-        if not user:
-            return jsonify({"error": "User not found!"}), 404
+        # Fetch user details from the Authentication microservice
+        auth_service_url = f"http://localhost:5001/users/{user_id}"
+        auth_response = requests.get(auth_service_url)
+        
+        
+        if auth_response.status_code != 200:
+            return jsonify({"error": "Error fetching user data from authentication service"}), 500
 
-        # Fetch enrollment status for the current user
+        user = auth_response.json()
+        # print(user)
+        # Fetch user's enrollment status
         enrollment = Enrollment.query.filter_by(course_id=course_id, user_id=user_id).first()
         enrollment_status = {
             "status": enrollment.status if enrollment else "Not Enrolled",
-            "enrolled_date": enrollment.enrolled_date if enrollment else None,
             "is_completed": enrollment.is_completed if enrollment else False
         }
-
-        # Fetch 'is_complete' filter from query parameters (optional)
-        is_complete_filter = request.args.get('is_complete', None)
-
-        # Fetch all employees and their enrollment statuses for this course
-        employees = User.query.filter_by(role='Employee').all()  # Assuming 'Employee' role exists
-        employee_enrollment_list = []
-        for employee in employees:
-            emp_enrollment = Enrollment.query.filter_by(course_id=course_id, user_id=employee.id).first()
-            if emp_enrollment:
-                emp_status = emp_enrollment.status
-                emp_is_completed = emp_enrollment.is_completed
-            else:
-                emp_status = "Not Enrolled"
-                emp_is_completed = False
-
-            # Apply the completion filter if provided
-            if is_complete_filter is not None:
-                filter_value = is_complete_filter.lower() == 'true'
-                if emp_is_completed != filter_value:
-                    continue
-
-            employee_enrollment_list.append({
-                "user_id": employee.id,
-                "name": employee.name,
-                "email": employee.email,
-                "status": emp_status,
-                "enrolled_date": emp_enrollment.enrolled_date if emp_enrollment else None,
-                "is_completed": emp_is_completed
-            })
-
-        # Prepare course details
-        course_details = {
-            "course_id": course.id,
-            "title": course.title,
-            "description": course.description,
-            "instructor": course.instructor,
-            "start_date": course.start_date,
-            "end_date": course.end_date,
-            "duration": course.duration,
-            "created_by": {
-                "id": course.created_by,
-                "name": User.query.get(course.created_by).name,
-                "email": User.query.get(course.created_by).email
-            },
-            "enrollment_status": enrollment_status,
-            "user_details": {
-                "user_id": user.id,
-                "name": user.name,
-                "email": user.email,
-                "role": user.role
-            },
-            "employee_enrollments": employee_enrollment_list  # List of employees after applying the filter
-        }
-
-        return jsonify({"course_details": course_details}), 200
+        
+        print(course.created_at)
+        return jsonify({
+            "course_details": {
+                "course_id": course.id,
+                "title": course.title,
+                "description": course.description,
+                "instructor": course.instructor,
+                "status": enrollment_status['status'],
+                "is_completed": enrollment_status['is_completed'],
+                "start_date": course.start_date,
+                "end_date": course.end_date,
+                "duration": course.duration,
+                "created_at": course.created_at,
+                "created_by": {
+                    "id": course.created_by,
+                    "name": user.get('name'),
+                    "email": user.get('email')
+                }
+            }
+        }), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    
-    
-# Fetch All Unverified Users
 
+
+
+# Route to fetch all unverified users from Microservice 1
 @AboutCourse.route('/users/unverified', methods=['GET'])
 def get_unverified_users():
     try:
-        unverified_users = User.query.filter_by(isVerified="False").all()
-        users = [
-            {"id": user.id, "name": user.name, "email": user.email, "role": user.role}
-            for user in unverified_users
-        ]
-        return jsonify(users), 200
+        # Make API call to Microservice 1 to get unverified users
+        response = requests.get(f"http://localhost:5001/users/unverified")
+        
+        # If the response is successful
+        if response.status_code == 200:
+            unverified_users = response.json()
+            return jsonify(unverified_users), 200
+        else:
+            return jsonify({"error": "Failed to fetch unverified users from Microservice 1"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     
-  
     
 # Approve a User
 
 @AboutCourse.route('/users/approve/<int:user_id>', methods=['PATCH'])
 def approve_user(user_id):
     try:
-        user = User.query.get(user_id)
-        if not user:
-            return jsonify({"error": "User not found"}), 404
-
-        user.isVerified = "True"
-        db.session.commit()
-        return jsonify({"message": "User approved successfully!"}), 200
+        response = requests.patch(f"http://localhost:5001/users/approve/{user_id}")
+        
+        if response.status_code == 200:
+            return jsonify({"message": "User approved successfully!"}), 200
+        else:
+            return jsonify({"error": "Failed to approve user in Microservice 1"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
 
 # Disapprove or Reset a User
 
 @AboutCourse.route('/users/disapprove/<int:user_id>', methods=['PATCH'])
 def disapprove_user(user_id):
     try:
-        user = User.query.get(user_id)
-        if not user:
-            return jsonify({"error": "User not found"}), 404
+        response = requests.patch(f"http://localhost:5001/users/disapprove/{user_id}")
+        
+        if response.status_code == 200:
+            return jsonify({"message": "User disapproved successfully!"}), 200
+        else:
+            return jsonify({"error": "Failed to disapprove user in Microservice 1"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-        user.isVerified = "False"
-        db.session.commit()
-        return jsonify({"message": "User disapproved successfully!"}), 200
+
+@AboutCourse.route('/userCourses/<int:user_id>', methods=['GET'])
+def get_user_courses(user_id):
+    try:
+        # Fetch enrollments for the user
+        enrollments = Enrollment.query.filter_by(user_id=user_id).all()
+        if not enrollments:
+            return jsonify({"message": "No courses found for this user"}), 404
+
+        # Collect course performance details
+        course_details = []
+        for enrollment in enrollments:
+            course = Course.query.get(enrollment.course_id)
+        
+            course_progress = CourseProgress.query.filter_by(user_id=user_id, course_id=enrollment.course_id).first()
+            # print(course_progress)
+            if course:
+                # Check course progress status, default if none
+                progress_status = course_progress.status if course_progress else 'Not Started'
+
+                course_details.append({
+                    "course_id": course.id,
+                    "title": course.title,
+                    "description": course.description,
+                    "instructor": course.instructor,
+                    "status": enrollment.status,
+                    "is_completed": enrollment.is_completed,
+                    "enrolled_date": str(enrollment.enrolled_date),
+                    "progress_status": progress_status,  # Add course progress here
+                    "completion_percentage":course_progress.completion_percentage if course_progress else 0
+                })
+
+        return jsonify(course_details), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@AboutCourse.route('/employee-course-progress/<int:user_id>/<int:course_id>', methods=['GET'])
+def get_employee_course_progress(user_id, course_id):
+    try:
+        # Fetch user details from the first microservice
+        first_microservice_url = f'http://localhost:5001/users/{user_id}'  # Assuming user details endpoint
+        response = requests.get(first_microservice_url)
+
+        if response.status_code != 200:
+            return jsonify({"error": "Failed to fetch user details from the first microservice."}), response.status_code
+
+        user = response.json()
+
+        if user.get('role') != 'Employee':
+            return jsonify({"error": "User is not an employee."}), 400
+
+        # Fetch course progress details from the database
+        course_progress = CourseProgress.query.filter_by(user_id=user_id, course_id=course_id).first()
+
+        if not course_progress:
+            return jsonify({"error": "No progress found for this user in the specified course."}), 404
+
+        progress_data = {
+            "name": user.get('name'),
+            "email": user.get('email'),
+            "course_id": course_id,
+            "completion_percentage": course_progress.completion_percentage,
+            "status": course_progress.status,
+            "last_accessed": course_progress.last_accessed.strftime("%Y-%m-%d %H:%M:%S") if course_progress.last_accessed else None
+        }
+
+        return jsonify(progress_data), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+    
+EXCLUDED_ROLES = {"Manager", "HR", "Instructor"}
+
+@AboutCourse.route('/course/<int:course_id>/enrollments', methods=['GET'])
+def get_enrollment_status(course_id):
+    try:
+        # Fetch all users from the first microservice
+        response = requests.get('http://localhost:5001/users')
+        if response.status_code != 200:
+            return jsonify({"error": "Failed to fetch users"}), 500
+        
+        all_users = response.json()
+
+        # Fetch enrolled users for the given course_id from the database
+        enrolled_users = Enrollment.query.filter_by(course_id=course_id).all()
+        enrolled_user_ids = {enrollment.user_id for enrollment in enrolled_users}
+
+        enrolled = []
+        not_enrolled = []
+
+        for user in all_users:
+            # Skip users with roles Manager, HR, and Instructor
+            if user["role"] in EXCLUDED_ROLES:
+                continue
+
+            user_data = {
+                "id": user["id"],
+                "name": user["name"],
+                "email": user["email"],
+                "role": user["role"],
+                "isVerified": user["isVerified"]
+            }
+
+            if user["id"] in enrolled_user_ids:
+                enrolled.append(user_data)
+            else:
+                not_enrolled.append(user_data)
+
+        return jsonify({
+            "enrolled_users": enrolled,
+            "not_enrolled_users": not_enrolled
+        }), 200
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
